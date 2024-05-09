@@ -1,0 +1,26 @@
+[package]
+name = "rust-mtzip"
+version = "0.0.1"
+edition = "2021"
+description = "A library for making zip archives with multithreaded compression"
+license = "MIT"
+repository = "https://github.com/dounine/rust-mtzip"
+categories = ["compression", "concurrency"]
+documentation = "https://docs.rs/mtzip"
+authors = ["102535481@qq.com"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[package.metadata.docs.rs]
+features = ["rayon"]
+
+[dependencies]
+cfg-if = "1.0.0"
+flate2 = { version = "1.0", default-features = false}
+rayon = { version = "1.10.0", optional = true }
+
+[features]
+default = ["rust_backend"]
+rust_backend = ["flate2/rust_backend"]
+zlib = ["flate2/zlib"]
+rayon = ["dep:rayon"]
