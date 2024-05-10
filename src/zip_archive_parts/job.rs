@@ -10,18 +10,22 @@ use std::{
     panic::{RefUnwindSafe, UnwindSafe},
     path::Path,
 };
+use std::fs::metadata;
 use std::os::unix::raw::time_t;
+use std::path::PathBuf;
 
 use cfg_if::cfg_if;
 use flate2::{read::DeflateEncoder, Crc, CrcReader};
+// use futures_lite::AsyncWriteExt;
+use log::debug;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 use super::{extra_field::ExtraFields, file::ZipFile};
 use crate::{level::CompressionLevel, zip_archive_parts::file::ZipFileHeader, CompressionType};
 
-pub enum ZipJobOrigin<'p> {
+pub enum ZipJobOrigin {
     Filesystem {
-        path: Cow<'p, Path>,
+        path: PathBuf,
         compression_level: CompressionLevel,
         compression_type: CompressionType,
     },
@@ -45,7 +49,7 @@ pub enum ZipJobOrigin<'p> {
     // },
 }
 
-impl<'p> std::fmt::Debug for ZipJobOrigin<'p> {
+impl<'p> std::fmt::Debug for ZipJobOrigin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Filesystem {
@@ -98,12 +102,12 @@ impl<'p> std::fmt::Debug for ZipJobOrigin<'p> {
 }
 
 #[derive(Debug)]
-pub struct ZipJob<'p> {
-    pub data_origin: ZipJobOrigin<'p>,
+pub struct ZipJob {
+    pub data_origin: ZipJobOrigin,
     pub archive_path: String,
 }
 
-impl ZipJob<'_> {
+impl ZipJob {
     #[inline]
     const fn convert_attrs(attrs: u32) -> u16 {
         (attrs & 0xFFFF) as u16
@@ -141,56 +145,39 @@ impl ZipJob<'_> {
         extra_fields: ExtraFields,
         // zip_listener: Arc<tokio::sync::Mutex<P>>,
     ) -> std::io::Result<ZipFile> {
-        use async_compression::tokio::write::DeflateEncoder;
-        use tokio::io::AsyncWriteExt as _;
-        // let mut crc_reader = CrcReader::new(source);
-        let mut data = Vec::with_capacity(uncompressed_size.unwrap_or(0) as usize);
-
-        // let cursor = Cursor::new(Vec::new());
         let mut crc_writer = Crc::new();
-        let uncompressed_size = match compression_type {
+        let mut uncompressed_size = uncompressed_size.unwrap_or(0) as usize;
+        let mut data = match compression_type {
             CompressionType::Deflate => {
-                let mut encoder = DeflateEncoder::with_quality(
-                    &mut data,
+                let mut writer = async_compression::tokio::write::DeflateEncoder::with_quality(
+                    Vec::with_capacity(uncompressed_size),
                     Level::Precise(compression_level.get() as i32),
                 );
                 let mut reader = BufReader::new(source);
                 let batch_size = 1024 * 1024 * 4;
                 let mut buf = vec![0; batch_size];
-                let mut zip_bytes = 0;
+                let mut zip_bytes: usize = 0;
                 loop {
                     let n = reader.read(&mut buf).await?;
                     if n == 0 {
                         break;
                     }
-                    zip_bytes += n as u64;
+                    zip_bytes += n;
                     crc_writer.update(&buf[..n]);
-                    encoder.write_all(&buf[..n]).await?;
+                    writer.write_all(&buf[..n]).await?;
                 }
-                encoder.shutdown().await?;
-                zip_bytes as usize
+                writer.shutdown().await?;
+                uncompressed_size = zip_bytes;
+                writer.into_inner()
             }
             CompressionType::Stored => {
-                let mut cursor = Cursor::new(&mut data);
-                let mut zip_bytes = 0;
-                let mut reader = BufReader::new(source);
-                let buf = &mut [0u8; 1024 * 1024 * 4];
-                loop {
-                    let n = reader.read(buf).await?;
-                    if n == 0 {
-                        break;
-                    }
-                    zip_bytes += n as u64;
-                    crc_writer.update(&buf[..n]);
-                    cursor.write_all(&buf[..n]).await?;
-                }
-                zip_bytes as usize
+                Vec::new()
             }
         };
         debug_assert!(uncompressed_size <= u32::MAX as usize);
         let uncompressed_size = uncompressed_size as u32;
         data.shrink_to_fit();
-        let crc = crc_writer.sum(); //crc_reader.crc().sum();
+        let crc = crc_writer.sum();
         Ok(ZipFile {
             header: ZipFileHeader {
                 compression_type: CompressionType::Deflate,
@@ -204,7 +191,7 @@ impl ZipJob<'_> {
         })
     }
 
-    fn gen_file<R: Read, P: Fn(u64, u64)>(
+    fn gen_file<R: Read>(
         source: R,
         uncompressed_size: Option<u32>,
         archive_path: String,
@@ -212,8 +199,9 @@ impl ZipJob<'_> {
         compression_level: CompressionLevel,
         compression_type: CompressionType,
         extra_fields: ExtraFields,
-        zip_listener: Arc<Mutex<P>>,
+        // zip_listener: Arc<Mutex<P>>,
     ) -> std::io::Result<ZipFile> {
+        println!("3");
         let mut crc_reader = CrcReader::new(source);
         let mut data = Vec::with_capacity(uncompressed_size.unwrap_or(0) as usize);
         let uncompressed_size = match compression_type {
@@ -295,6 +283,71 @@ impl ZipJob<'_> {
                 let uncompressed_size = uncompressed_size as u32;
                 let external_file_attributes = Self::attributes_from_fs(&file_metadata);
                 let extra_fields = ExtraFields::new_from_fs(&file_metadata);
+
+                // use async_compression::tokio::write::DeflateEncoder;
+                // use tokio::io::AsyncWriteExt as _;
+                // let mut data = Vec::with_capacity(Some(uncompressed_size).unwrap_or(0) as usize);
+                //
+                // let mut crc_writer = Crc::new();
+                // let uncompressed_size = match compression_type {
+                //     CompressionType::Deflate => {
+                //         let mut encoder = DeflateEncoder::with_quality(
+                //             &mut data,
+                //             Level::Precise(compression_level.get() as i32),
+                //         );
+                //         let mut reader = BufReader::new(file);
+                //         let batch_size = 1024 * 1024 * 4;
+                //         let mut buf = vec![0; batch_size];
+                //         let mut zip_bytes = 0;
+                //         loop {
+                //             let n = reader.read(&mut buf).await?;
+                //             if n == 0 {
+                //                 break;
+                //             }
+                //             zip_bytes += n as u64;
+                //             crc_writer.update(&buf[..n]);
+                //             encoder.write_all(&buf[..n]).await?;
+                //         }
+                //         encoder.shutdown().await?;
+                //         zip_bytes as usize
+                //     }
+                //     CompressionType::Stored => {
+                //         println!("stored");
+                //         // let mut cursor = Cursor::new(&mut data);
+                //         // let mut zip_bytes = 0;
+                //         // let mut reader = BufReader::new(file);
+                //         // let buf = &mut [0u8; 1024 * 1024 * 4];
+                //         // loop {
+                //         //     let n = reader.read(buf).await?;
+                //         //     if n == 0 {
+                //         //         break;
+                //         //     }
+                //         //     zip_bytes += n as u64;
+                //         //     crc_writer.update(&buf[..n]);
+                //         //     cursor.write_all(&buf[..n]).await?;
+                //         // }
+                //         // zip_bytes as usize
+                //         0
+                //     }
+                // };
+                // debug_assert!(uncompressed_size <= u32::MAX as usize);
+                // let uncompressed_size = uncompressed_size as u32;
+                // data.shrink_to_fit();
+                // let crc = crc_writer.sum(); //crc_reader.crc().sum();
+                // println!("crc: {}", crc);
+                // Ok(ZipFile {
+                //     header: ZipFileHeader {
+                //         compression_type: CompressionType::Deflate,
+                //         crc,
+                //         uncompressed_size,
+                //         filename: self.archive_path,
+                //         external_file_attributes: (external_file_attributes as u32) << 16,
+                //         extra_fields,
+                //     },
+                //     data,
+                // })
+
+
                 Self::gen_file_with_tokio(
                     file,
                     Some(uncompressed_size),
@@ -380,46 +433,46 @@ impl ZipJob<'_> {
                     compression_level,
                     compression_type,
                     extra_fields,
-                    zip_listener,
+                    // zip_listener,
                 )
             }
-            ZipJobOrigin::RawData {
-                data,
-                compression_level,
-                compression_type,
-                extra_fields,
-                external_attributes,
-            } => {
-                let uncompressed_size = data.len();
-                debug_assert!(uncompressed_size <= u32::MAX as usize);
-                let uncompressed_size = uncompressed_size as u32;
-                Self::gen_file(
-                    data.as_ref(),
-                    Some(uncompressed_size),
-                    self.archive_path,
-                    external_attributes,
-                    compression_level,
-                    compression_type,
-                    extra_fields,
-                    zip_listener,
-                )
-            }
-            ZipJobOrigin::Reader {
-                reader,
-                compression_level,
-                compression_type,
-                extra_fields,
-                external_attributes,
-            } => Self::gen_file(
-                reader,
-                None,
-                self.archive_path,
-                external_attributes,
-                compression_level,
-                compression_type,
-                extra_fields,
-                zip_listener,
-            ),
+            // ZipJobOrigin::RawData {
+            //     data,
+            //     compression_level,
+            //     compression_type,
+            //     extra_fields,
+            //     external_attributes,
+            // } => {
+            //     let uncompressed_size = data.len();
+            //     debug_assert!(uncompressed_size <= u32::MAX as usize);
+            //     let uncompressed_size = uncompressed_size as u32;
+            //     Self::gen_file(
+            //         data.as_ref(),
+            //         Some(uncompressed_size),
+            //         self.archive_path,
+            //         external_attributes,
+            //         compression_level,
+            //         compression_type,
+            //         extra_fields,
+            //         zip_listener,
+            //     )
+            // }
+            // ZipJobOrigin::Reader {
+            //     reader,
+            //     compression_level,
+            //     compression_type,
+            //     extra_fields,
+            //     external_attributes,
+            // } => Self::gen_file(
+            //     reader,
+            //     None,
+            //     self.archive_path,
+            //     external_attributes,
+            //     compression_level,
+            //     compression_type,
+            //     extra_fields,
+            //     zip_listener,
+            // ),
         }
     }
 }

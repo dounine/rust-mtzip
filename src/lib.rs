@@ -10,6 +10,7 @@ use std::{
     path::Path,
     sync::{mpsc, Mutex},
 };
+use std::path::PathBuf;
 
 use level::CompressionLevel;
 #[cfg(feature = "rayon")]
@@ -25,6 +26,7 @@ pub mod level;
 mod zip_archive_parts;
 
 pub use zip_archive_parts::extra_field;
+use crate::zip_archive_parts::file::TokioReceiveZipFile;
 
 // TODO: tests, maybe examples
 
@@ -58,13 +60,13 @@ pub enum CompressionType {
 /// - `'r` is the lifetime of of borrowed data in readers supplied to
 /// [`add_file_from_reader`](Self::add_file_from_reader)
 #[derive(Debug, Default)]
-pub struct ZipArchive<'p> {
-    jobs_queue: Vec<ZipJob<'p>>,
+pub struct ZipArchive {
+    pub jobs_queue: Vec<ZipJob>,
     data: ZipData,
 }
 
-impl<'p> ZipArchive<'p> {
-    fn push_job(&mut self, job: ZipJob<'p>) {
+impl ZipArchive {
+    fn push_job(&mut self, job: ZipJob) {
         self.jobs_queue.push(job);
     }
 
@@ -91,32 +93,40 @@ impl<'p> ZipArchive<'p> {
     /// to obtain them.
     pub fn add_file_from_fs(
         &mut self,
-        fs_path: impl Into<Cow<'p, Path>>,
+        fs_path: PathBuf,
         archived_path: String,
         compression_level: Option<CompressionLevel>,
         compression_type: Option<CompressionType>,
-    ) {
-        let job = ZipJob {
+    ) -> ZipJob {
+        // let job = ZipJob {
+        //     data_origin: ZipJobOrigin::Filesystem {
+        //         path: fs_path.clone(),
+        //         compression_level: compression_level.unwrap_or(CompressionLevel::best()),
+        //         compression_type: compression_type.unwrap_or(CompressionType::Deflate),
+        //     },
+        //     archive_path: archived_path.clone(),
+        // };
+        // self.push_job(job);
+        ZipJob {
             data_origin: ZipJobOrigin::Filesystem {
-                path: fs_path.into(),
+                path: fs_path,
                 compression_level: compression_level.unwrap_or(CompressionLevel::best()),
                 compression_type: compression_type.unwrap_or(CompressionType::Deflate),
             },
             archive_path: archived_path,
-        };
-        self.push_job(job);
+        }
     }
 
     pub async fn add_file_from_fs_with_tokio(
         &mut self,
-        fs_path: impl Into<Cow<'p, Path>>,
+        fs_path: PathBuf,
         archived_path: String,
         compression_level: Option<CompressionLevel>,
         compression_type: Option<CompressionType>,
     ) {
         let job = ZipJob {
             data_origin: ZipJobOrigin::Filesystem {
-                path: fs_path.into(),
+                path: fs_path,
                 compression_level: compression_level.unwrap_or(CompressionLevel::best()),
                 compression_type: compression_type.unwrap_or(CompressionType::Deflate),
             },
@@ -201,7 +211,7 @@ impl<'p> ZipArchive<'p> {
         archived_path: String,
         attributes: Option<u16>,
         zip_listener: Arc<Mutex<P>>,
-    ) {
+    ) -> ZipJob {
         let job = ZipJob {
             data_origin: ZipJobOrigin::Directory {
                 extra_fields: ExtraFields::default(),
@@ -209,28 +219,24 @@ impl<'p> ZipArchive<'p> {
             },
             archive_path: archived_path,
         };
-        let file = job.into_file(zip_listener).expect("No failing code path");
-        self.push_file(file);
+        // let file = job.into_file(zip_listener).expect("No failing code path");
+        // self.push_file(file);
+        job
     }
 
-    pub async fn add_directory_with_tokio<P: Fn(u64, u64)>(
+    pub fn add_directory_with_tokio(
         &mut self,
         archived_path: String,
         attributes: Option<u16>,
         // zip_listener: Arc<tokio::sync::Mutex<P>>,
-    ) {
-        let job = ZipJob {
+    ) -> ZipJob {
+        ZipJob {
             data_origin: ZipJobOrigin::Directory {
                 extra_fields: ExtraFields::default(),
                 external_attributes: attributes.unwrap_or(ZipFile::default_dir_attrs()),
             },
             archive_path: archived_path,
-        };
-        let file = job
-            .into_file_with_tokio()
-            .await
-            .expect("No failing code path");
-        self.push_file(file);
+        }
     }
 
     /// Add a directory entry.
@@ -330,12 +336,13 @@ impl<'p> ZipArchive<'p> {
     }
 
     #[inline]
-    pub async fn write_with_tokio<W: Write + Seek, P: Fn(u64, u64) + Send>(
+    pub async fn write_with_tokio<W: Write + Seek>(
         &mut self,
         writer: &mut W,
-        zip_listener: Arc<Mutex<P>>,
+        jobs: Arc<tokio::sync::Mutex<Vec<ZipJob>>>,
+        // zip_listener: Arc<Mutex<P>>,
     ) -> std::io::Result<()> {
-        self.write_with_threads_with_tokio(writer, Self::get_threads(), zip_listener)
+        self.write_with_threads_with_tokio(writer, Self::get_threads(), jobs)
             .await
     }
 
@@ -372,20 +379,28 @@ impl<'p> ZipArchive<'p> {
     }
 
     #[inline]
-    pub async fn write_with_threads_with_tokio<W: Write + Seek, P: Fn(u64, u64) + Send>(
+    pub async fn write_with_threads_with_tokio<W: Write + Seek>(
         &mut self,
         writer: &mut W,
         threads: usize,
-        zip_listener: Arc<Mutex<P>>,
+        jobs: Arc<tokio::sync::Mutex<Vec<ZipJob>>>,
+        // zip_listener: Arc<Mutex<P>>,
     ) -> std::io::Result<()> {
-        if !self.jobs_queue.is_empty() {
-            self.compress_with_consumer(
+        let size = {
+            let jobs = jobs.lock().await;
+            jobs.len()
+        };
+        if size > 0 {
+            self.compress_with_consumer_with_tokio(
+                jobs,
                 threads,
-                |zip_data, rx| zip_data.write(writer, rx),
-                zip_listener,
-            )
+                |zip_data, rx| {
+                    zip_data.write_with_tokio(writer, rx)
+                },
+                // zip_listener,
+            ).await
         } else {
-            self.data.write(writer, std::iter::empty())
+            self.data.write_with_tokio(writer, std::iter::empty())
         }
     }
 
@@ -398,9 +413,9 @@ impl<'p> ZipArchive<'p> {
         consumer: F,
         zip_listener: Arc<Mutex<P>>,
     ) -> T
-    where
-        F: FnOnce(&mut ZipData, mpsc::Receiver<ZipFile>) -> T,
-        P: Fn(u64, u64) + Send,
+        where
+            F: FnOnce(&mut ZipData, mpsc::Receiver<ZipFile>) -> T,
+            P: Fn(u64, u64) + Send,
     {
         let jobs_drain = Mutex::new(self.jobs_queue.drain(..));
         // let listener = Arc::new(Mutex::new(zip_listener));
@@ -414,8 +429,9 @@ impl<'p> ZipArchive<'p> {
                     s.spawn(move || loop {
                         let next_job = jobs_drain_ref.lock().unwrap().next_back();
                         if let Some(job) = next_job {
+                            let zip_file = job.into_file(listener_ref.clone()).unwrap();
                             thread_tx
-                                .send(job.into_file(listener_ref.clone()).unwrap())
+                                .send(zip_file)
                                 .unwrap();
                         } else {
                             break;
@@ -428,43 +444,45 @@ impl<'p> ZipArchive<'p> {
         })
     }
 
-    async fn compress_with_consumer_with_tokio<F, T, P>(
+    async fn compress_with_consumer_with_tokio<F, T>(
         &mut self,
+        jobs: Arc<tokio::sync::Mutex<Vec<ZipJob>>>,
         threads: usize,
         consumer: F,
-        // zip_listener: Arc<tokio::sync::Mutex<P>>,
     ) -> T
-    where
-        F: FnOnce(&mut ZipData, tokio::sync::mpsc::Receiver<ZipFile>) -> T,
-        P: Fn(u64, u64) + Send,
+        where
+            F: FnOnce(&mut ZipData, mpsc::Receiver<ZipFile>) -> T,
     {
-        // let listener = Arc::new(Mutex::new(zip_listener));
-        // let listener_ref = &zip_listener;
-        // let jobs_drain_ref = &jobs_drain;
-
-        // tokio::spawn(async {
-        let (tx, rx) = tokio::sync::mpsc::channel::<ZipFile>(threads);
-        let jobs_drain = Arc::new(tokio::sync::Mutex::new(self.jobs_queue.drain(..)));
-        for _ in 0..threads {
+        let (tx, rx) = mpsc::channel::<ZipFile>();
+        let size = {
+            let jobs = jobs.lock().await;
+            jobs.len()
+        };
+        let max_threads = threads.min(size);
+        println!("max_threads: {}", max_threads);
+        let mut handlers = Vec::new();
+        println!("max_threads: {}", max_threads);
+        for _ in 0..max_threads {
             let tx = tx.clone();
-            let jb = jobs_drain.clone();
-            tokio::spawn(async move {
+            let mut jobs_drain_ref = jobs.clone();
+            let handler = tokio::spawn(async move {
                 loop {
-                    let next_job = jb.lock().await.next_back();
+                    let next_job = jobs_drain_ref.lock().await.pop();
                     if let Some(job) = next_job {
-                        let zip_file = job
-                            .into_file_with_tokio()
-                            .await
-                            .unwrap();
-                        tx.send(zip_file).await.unwrap();
+                        let zip_file = job.into_file_with_tokio().await.expect("No failing code path");
+                        tx.send(zip_file).unwrap();
                     } else {
                         break;
                     }
                 }
             });
+            handlers.push(handler);
         }
+        drop(tx);
+        // for handler in handlers { //TODO 在actix-web下，注释掉，程序不会运行上面的spawn
+        //     handler.await.expect("No failing code path");
+        // }
         consumer(&mut self.data, rx)
-        // });
     }
 
     fn get_threads() -> usize {
@@ -475,7 +493,7 @@ impl<'p> ZipArchive<'p> {
 }
 
 #[cfg(feature = "rayon")]
-impl<'p> ZipArchive<'p> {
+impl ZipArchive {
     /// Compress contents and use rayon for parallelism.
     ///
     /// Uses whatever thread pool this function is executed in.

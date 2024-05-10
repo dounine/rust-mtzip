@@ -5,7 +5,7 @@ use std::sync::Mutex;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 
-use super::file::{ZipFile, ZipFileNoData};
+use super::file::{TokioReceiveZipFile, ZipFile, ZipFileNoData};
 
 const END_OF_CENTRAL_DIR_SIGNATURE: u32 = 0x06054B50;
 
@@ -22,6 +22,33 @@ impl ZipData {
     ) -> std::io::Result<()> {
         let zip_files = self.write_files_contained_and_iter(buf, zip_file_iter)?;
 
+        let files_amount = super::files_amount_u16(&zip_files);
+
+        let central_dir_offset = super::stream_position_u32(buf)?;
+
+        self.write_central_dir(zip_files, buf)?;
+
+        let central_dir_start = super::stream_position_u32(buf)?;
+
+        self.write_end_of_central_directory(
+            buf,
+            central_dir_offset,
+            central_dir_start,
+            files_amount,
+        )
+    }
+
+    pub fn write_with_tokio<W: Write + Seek, I: IntoIterator<Item=ZipFile>>(
+        &mut self,
+        buf: &mut W,
+        zip_file_iter: I,
+    ) -> std::io::Result<()> {
+        //watch zip_file_iter
+        let zip_file_iter_new = zip_file_iter.into_iter()
+            .map(|zip_file| {
+                zip_file
+            });
+        let zip_files = self.write_files_contained_and_iter(buf, zip_file_iter_new)?;
         let files_amount = super::files_amount_u16(&zip_files);
 
         let central_dir_offset = super::stream_position_u32(buf)?;
@@ -93,7 +120,9 @@ impl ZipData {
     ) -> std::io::Result<Vec<ZipFileNoData>> {
         zip_files
             .into_iter()
-            .map(|zipfile| zipfile.write_local_file_header_with_data_consuming(buf))
+            .map(|zipfile| {
+                zipfile.write_local_file_header_with_data_consuming(buf)
+            })
             .collect::<std::io::Result<Vec<_>>>()
     }
 

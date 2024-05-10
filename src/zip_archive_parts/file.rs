@@ -39,6 +39,9 @@ pub struct ZipFile {
 }
 
 #[derive(Debug)]
+pub struct TokioReceiveZipFile(pub tokio::sync::mpsc::Receiver<ZipFile>);
+
+#[derive(Debug)]
 pub struct ZipFileHeader {
     pub compression_type: CompressionType,
     pub crc: u32,
