@@ -67,6 +67,6 @@ async fn main() {
     let jobs = Arc::new(tokio::sync::Mutex::new(jobs));
     let time = std::time::Instant::now();
     let (tx, rx) = tokio::sync::mpsc::channel::<u64>(1);
-    zipper.write_with_tokio(&mut file, jobs, Some(tx)).await.expect("tokio error");
+    zipper.write_with_tokio(&mut file, jobs, None).await.expect("tokio error");
     println!("time: {:?}", time.elapsed());
 }
