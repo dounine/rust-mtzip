@@ -66,7 +66,12 @@ async fn main() {
     let mut file = tokio::fs::File::create("/Users/lake/dounine/github/ipa/rust-mtzip/file/test.zip").await.unwrap();
     let jobs = Arc::new(tokio::sync::Mutex::new(jobs));
     let time = std::time::Instant::now();
-    let (tx, rx) = tokio::sync::mpsc::channel::<u64>(1);
-    zipper.write_with_tokio(&mut file, jobs, None).await.expect("tokio error");
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<u64>(2);
+    tokio::spawn(async move {
+        while let Some(a) = rx.recv().await {
+            println!("zip bytes {}", a);
+        }
+    });
+    zipper.write_with_tokio(&mut file, jobs, Some(tx)).await.expect("tokio error");
     println!("time: {:?}", time.elapsed());
 }
