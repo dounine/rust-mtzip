@@ -17,6 +17,7 @@ use level::CompressionLevel;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use tokio::io::{AsyncSeek, AsyncWrite};
+use tokio::task::JoinHandle;
 use zip_archive_parts::{
     data::ZipData,
     extra_field::ExtraFields,
@@ -230,7 +231,6 @@ impl ZipArchive {
         &mut self,
         archived_path: String,
         attributes: Option<u16>,
-        // zip_listener: Arc<tokio::sync::Mutex<P>>,
     ) -> ZipJob {
         ZipJob {
             data_origin: ZipJobOrigin::Directory {
@@ -343,7 +343,6 @@ impl ZipArchive {
         writer: &mut W,
         jobs: Arc<tokio::sync::Mutex<Vec<ZipJob>>>,
         process: Option<tokio::sync::mpsc::Sender<u64>>,
-        // zip_listener: Arc<Mutex<P>>,
     ) -> std::io::Result<()> {
         let threads = Self::get_threads();
         let mut rx = {
@@ -364,9 +363,8 @@ impl ZipArchive {
                             let process_new = process.clone();
                             let zip_file = job
                                 .into_file_with_tokio(process_new)
-                                .await
-                                .expect("No failing code path");
-                            tx.send(zip_file).await.unwrap();
+                                .await.unwrap();
+                            tx.send(zip_file).await.unwrap()
                         } else {
                             break;
                         }
@@ -378,8 +376,6 @@ impl ZipArchive {
         self.data
             .write_with_tokio(writer, &mut rx)
             .await
-            .expect("No failing code path");
-        Ok(())
     }
 
     /// Write compressed data to a writer (usually a file). Executes
@@ -436,7 +432,7 @@ impl ZipArchive {
                 // },
                 // zip_listener,
             )
-            .await;
+                .await;
             Ok(())
         } else {
             // self.data.write_with_tokio(writer, tokio::sync::mpsc::Receiver::).await
@@ -453,9 +449,9 @@ impl ZipArchive {
         consumer: F,
         zip_listener: Arc<Mutex<P>>,
     ) -> T
-    where
-        F: FnOnce(&mut ZipData, mpsc::Receiver<ZipFile>) -> T,
-        P: Fn(u64, u64) + Send,
+        where
+            F: FnOnce(&mut ZipData, mpsc::Receiver<ZipFile>) -> T,
+            P: Fn(u64, u64) + Send,
     {
         let jobs_drain = Mutex::new(self.jobs_queue.drain(..));
         // let listener = Arc::new(Mutex::new(zip_listener));

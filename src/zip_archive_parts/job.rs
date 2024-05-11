@@ -144,7 +144,6 @@ impl ZipJob {
         compression_type: CompressionType,
         extra_fields: ExtraFields,
         process: Option<tokio::sync::mpsc::Sender<u64>>,
-        // zip_listener: Arc<tokio::sync::Mutex<P>>,
     ) -> std::io::Result<ZipFile> {
         let mut crc_writer = Crc::new();
         let mut uncompressed_size = uncompressed_size.unwrap_or(0) as usize;
@@ -165,7 +164,8 @@ impl ZipJob {
                     }
                     zip_bytes += n;
                     if let Some(process) = &process {
-                        process.send(n as u64).await.unwrap();
+                        process.send(n as u64).await
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                     }
                     crc_writer.update(&buf[..n]);
                     writer.write_all(&buf[..n]).await?;
@@ -263,7 +263,6 @@ impl ZipJob {
     pub async fn into_file_with_tokio(
         self,
         process: Option<tokio::sync::mpsc::Sender<u64>>,
-        // zip_listener: Arc<tokio::sync::Mutex<P>>,
     ) -> std::io::Result<ZipFile> {
         match self.data_origin {
             ZipJobOrigin::Directory {
@@ -279,8 +278,8 @@ impl ZipJob {
                 compression_level,
                 compression_type,
             } => {
-                let file = tokio::fs::File::open(&path).await.unwrap();
-                let file_metadata = tokio::fs::metadata(path).await.unwrap();
+                let file = tokio::fs::File::open(&path).await?;
+                let file_metadata = tokio::fs::metadata(path).await?;
                 let uncompressed_size = file_metadata.len();
                 debug_assert!(uncompressed_size <= u32::MAX.into());
                 let uncompressed_size = uncompressed_size as u32;

@@ -157,19 +157,10 @@ impl ZipData {
         zip_files: I,
         buf: &mut W,
     ) -> std::io::Result<()> {
-        let list = zip_files.into_iter().collect::<Vec<_>>();
-        for zip_file in list {
+        for zip_file in zip_files {
             zip_file.write_central_directory_entry_with_tokio(buf).await?;
         }
         Ok(())
-        // while let Some(ref f) = zip_files {
-        //     f.write_central_directory_entry_with_tokio(buf).await?;
-        // }
-        // zip_files
-        //     .into_iter()
-        //     .try_for_each(|zip_file| async {
-        //         zip_file.write_central_directory_entry_with_tokio(buf).await
-        //     })
     }
 
     const FOOTER_LENGTH: usize = 22;
