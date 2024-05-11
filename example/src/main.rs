@@ -31,9 +31,6 @@ pub async fn dirs(dir: PathBuf) -> Result<Vec<PathBuf>, String> {
 async fn main() {
     //设置日志级别为info
     env_logger::init();
-    let listener = Arc::new(Mutex::new(|a: u64, b: u64| {
-        println!("{} {}", a, b);
-    }));
     let mut zipper = ZipArchive::new();
     let mut jobs = Vec::new();
 
@@ -60,7 +57,7 @@ async fn main() {
                 None,
             ));
         } else {
-            // jobs.push(zipper.add_directory_with_tokio(file_name, None));
+            jobs.push(zipper.add_directory_with_tokio(file_name, None));
         }
     }
     let mut file = tokio::fs::File::create("/Users/lake/dounine/github/ipa/rust-mtzip/file/test.zip").await.unwrap();
