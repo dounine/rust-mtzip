@@ -1,39 +1,81 @@
-[![crates.io](https://img.shields.io/crates/v/mtzip?style=flat)](https://crates.io/crates/mtzip) [![crates.io](https://img.shields.io/crates/d/mtzip?style=flat)](https://crates.io/crates/mtzip)
+[![crates.io](https://img.shields.io/crates/v/async-mtzip?style=flat)](https://crates.io/crates/async-mtzip) [![crates.io](https://img.shields.io/crates/d/async-mtzip?style=flat)](https://crates.io/crates/async-mtzip)
 
-# rust-mtzip
+# async-mtzip
 
-MTZIP (Stands for Multi-Threaded ZIP) is a library for making zip archives
+async-mtzip (Stands for Multi-Threaded async ZIP) is a library for making zip archives
 while utilising all available performance available with multithreading. The amount
 of threads can be limited by the user or detected automatically.
 
 Example usage:
 
 ```rs
-use mtzip::ZipArchive;
+use std::path::PathBuf;
+use async_mtzip::level::CompressionLevel;
+use async_mtzip::ZipArchive;
+use std::sync::{Arc, Mutex};
+use tokio::fs::read_dir;
 
-// Creating the zipper that holds data and handles compression
-let mut zipper = ZipArchive::new();
+pub async fn dirs(dir: PathBuf) -> Result<Vec<PathBuf>, String> {
+    let mut dirs = vec![dir];
+    let mut files = vec![];
+    while !dirs.is_empty() {
+        let mut dir_iter = read_dir(dirs.remove(0)).await
+            .map_err(|e| format!("read_dir error: {}", e))?;
+        while let Some(entry) = dir_iter.next_entry().await
+            .map_err(|e| format!("next_entry error: {}", e))?
+        {
+            let entry_path_buf = entry.path();
+            if entry_path_buf.is_dir() {
+                dirs.push(entry_path_buf);
+            } else {
+                files.push(entry_path_buf);
+            }
+        }
+    }
+    Ok(files)
+}
 
-// Adding a file from filesystem
-zipper.add_file_from_fs("input/test_text_file.txt", "test_text_file.txt");
+#[tokio::main]
+async fn main() {
+    env_logger::init();
+    let mut zipper = ZipArchive::new();
+    let mut jobs = Vec::new();
 
-// Adding a file from a byte array
-zipper.add_file_from_memory(b"Hello, world!", "hello_world.txt");
+    let zip_folder = std::path::Path::new("/Users/lake/dounine/github/ipa/rust-mtzip/file/aa");
 
-// Adding a directory and a file to it
-zipper.add_directory("test_dir");
-// And adding a file to it
-zipper.add_file_from_fs("input/file_that_goes_to_a_dir.txt", "test_dir/file_that_goes_to_a_dir.txt");
-
-// Writing to a file
-// First, open the file
-let mut file = File::create("output.zip").unwrap();
-// Then, write to it
-zipper.write(&mut file); // Amount of threads is chosen automatically
+    let files = dirs(zip_folder.to_path_buf()).await.expect("dirs error");
+    let input_dir_str = zip_folder
+        .as_os_str()
+        .to_str()
+        .expect("Input path not valid UTF-8.");
+    for file in files {
+        let entry_str = file
+            .as_path()
+            .as_os_str()
+            .to_str().expect("Directory file path not valid UTF-8.");
+        let file_name = &entry_str[(input_dir_str.len() + 1)..];
+        let file_name = file_name.to_string();
+        if file.is_file() {
+            jobs.push(zipper.add_file_from_fs(
+                file,
+                file_name,
+                CompressionLevel::new(3),
+                None,
+            ));
+        } else {
+            jobs.push(zipper.add_directory_with_tokio(file_name, None));
+        }
+    }
+    let mut file = tokio::fs::File::create("/Users/lake/dounine/github/ipa/rust-mtzip/file/test.zip").await.unwrap();
+    let jobs = Arc::new(tokio::sync::Mutex::new(jobs));
+    let time = std::time::Instant::now();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<u64>(2);
+    tokio::spawn(async move {
+        while let Some(a) = rx.recv().await {
+            println!("zip bytes {}", a);
+        }
+    });
+    zipper.write_with_tokio(&mut file, jobs, Some(tx)).await.expect("tokio error");
+    println!("time: {:?}", time.elapsed());
+}
 ```
-
-The amount of threads is also determined by the amount of files that are going to be compressed. Because Deflate compression cannot be multithreaded, the multithreading is achieved by having the files compressed individually. This means that if you have 12 threads available but only 6 files being added to the archive, you will only use 6 threads.
-
-## Rayon
-
-This crate also supports [`rayon`](https://crates.io/crates/rayon) for thread management and parallelism, enabled with `rayon` feature.

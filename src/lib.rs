@@ -17,7 +17,6 @@ use level::CompressionLevel;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 use tokio::io::{AsyncSeek, AsyncWrite};
-use tokio::task::JoinHandle;
 use zip_archive_parts::{
     data::ZipData,
     extra_field::ExtraFields,
@@ -28,7 +27,6 @@ use zip_archive_parts::{
 pub mod level;
 mod zip_archive_parts;
 
-use crate::zip_archive_parts::file::TokioReceiveZipFile;
 pub use zip_archive_parts::extra_field;
 
 // TODO: tests, maybe examples

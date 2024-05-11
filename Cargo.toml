@@ -2,7 +2,7 @@
 name = "async-mtzip"
 version = "0.0.1"
 edition = "2021"
-description = "A library for making zip archives with multithreaded compression"
+description = "A library for making zip archives with multithreaded async compression"
 license = "MIT"
 repository = "https://github.com/dounine/rust-mtzip"
 categories = ["compression", "concurrency"]

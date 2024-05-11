@@ -1,10 +1,7 @@
-use std::fs::File;
 use std::path::PathBuf;
 use async_mtzip::level::CompressionLevel;
 use async_mtzip::ZipArchive;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use log::{debug, info, LevelFilter};
 use tokio::fs::read_dir;
 
 pub async fn dirs(dir: PathBuf) -> Result<Vec<PathBuf>, String> {
