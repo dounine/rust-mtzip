@@ -1,6 +1,7 @@
 use std::io::{Seek, Write};
 
 use cfg_if::cfg_if;
+use tokio::io::{AsyncSeek, AsyncWrite};
 
 use super::extra_field::ExtraFields;
 use crate::CompressionType;
@@ -97,6 +98,20 @@ impl ZipFile {
         })
     }
 
+    pub async fn write_local_file_header_with_data_consuming_with_tokio<W: AsyncWrite + AsyncSeek + Unpin>(
+        self,
+        buf: &mut W,
+    ) -> std::io::Result<ZipFileNoData> {
+        let local_header_offset = super::stream_position_u32_with_tokio(buf).await?;
+        self.write_local_file_header_and_data_with_tokio(buf).await?;
+        let Self { header, data } = self;
+        Ok(ZipFileNoData {
+            header,
+            local_header_offset,
+            compressed_size: data.len() as u32,
+        })
+    }
+
     const LOCAL_FILE_HEADER_LEN: usize = 30;
 
     pub fn write_local_file_header_and_data<W: Write>(&self, buf: &mut W) -> std::io::Result<()> {
@@ -149,6 +164,63 @@ impl ZipFile {
 
         Ok(())
     }
+
+
+    pub async fn write_local_file_header_and_data_with_tokio<W: AsyncWrite + Unpin>(&self, buf: &mut W) -> std::io::Result<()> {
+        // Writing to a temporary in-memory statically sized array first
+        let mut header = [0; Self::LOCAL_FILE_HEADER_LEN];
+        {
+            let mut header_buf: &mut [u8] = &mut header;
+
+            // signature
+            header_buf.write_all(&LOCAL_FILE_HEADER_SIGNATURE.to_le_bytes())?;
+            // version needed to extract
+            header_buf.write_all(&VERSION_NEEDED_TO_EXTRACT.to_le_bytes())?;
+            // general purpose bit flag
+            header_buf.write_all(&GENERAL_PURPOSE_BIT_FLAG.to_le_bytes())?;
+            // compression type
+            header_buf.write_all(&(self.header.compression_type as u16).to_le_bytes())?;
+            // Last modification time // moved to extra fields
+            header_buf.write_all(&0_u16.to_le_bytes())?;
+            // Last modification date // moved to extra fields
+            header_buf.write_all(&0_u16.to_le_bytes())?;
+            // crc
+            header_buf.write_all(&self.header.crc.to_le_bytes())?;
+            // Compressed size
+            debug_assert!(self.data.len() <= u32::MAX as usize);
+            header_buf.write_all(&(self.data.len() as u32).to_le_bytes())?;
+            // Uncompressed size
+            header_buf.write_all(&self.header.uncompressed_size.to_le_bytes())?;
+            // Filename size
+            debug_assert!(self.header.filename.len() <= u16::MAX as usize);
+            header_buf.write_all(&(self.header.filename.len() as u16).to_le_bytes())?;
+            // extra field size
+            header_buf.write_all(
+                &self
+                    .header
+                    .extra_fields
+                    .data_length::<false>()
+                    .to_le_bytes(),
+            )?;
+        }
+
+        {
+            use tokio::io::AsyncWriteExt;
+            buf.write_all(&header).await?;
+
+            // Filename
+            buf.write_all(self.header.filename.as_bytes()).await?;
+
+            // Extra field
+            self.header.extra_fields.write_with_tokio::<_, false>(buf).await?;
+
+            // Data
+            buf.write_all(&self.data).await?;
+        }
+
+        Ok(())
+    }
+
 
     #[inline]
     pub fn directory(
@@ -227,6 +299,64 @@ impl ZipFileNoData {
         buf.write_all(self.header.filename.as_bytes())?;
         // Extra field
         self.header.extra_fields.write::<_, true>(buf)?;
+
+        Ok(())
+    }
+
+    pub async fn write_central_directory_entry_with_tokio<W: AsyncWrite + Unpin>(&self, buf: &mut W) -> std::io::Result<()> {
+        // Writing to a temporary in-memory statically sized array first
+        let mut central_dir_entry_header = [0; Self::CENTRAL_DIR_ENTRY_LEN];
+        {
+            let mut central_dir_entry_buf: &mut [u8] = &mut central_dir_entry_header;
+
+            // signature
+            central_dir_entry_buf.write_all(&CENTRAL_FILE_HEADER_SIGNATURE.to_le_bytes())?;
+            // version made by
+            central_dir_entry_buf.write_all(&VERSION_MADE_BY.to_le_bytes())?;
+            // version needed to extract
+            central_dir_entry_buf.write_all(&VERSION_NEEDED_TO_EXTRACT.to_le_bytes())?;
+            // general purpose bit flag
+            central_dir_entry_buf.write_all(&GENERAL_PURPOSE_BIT_FLAG.to_le_bytes())?;
+            // compression type
+            central_dir_entry_buf
+                .write_all(&(self.header.compression_type as u16).to_le_bytes())?;
+            // Last modification time // moved to extra fields
+            central_dir_entry_buf.write_all(&0_u16.to_le_bytes())?;
+            // Last modification date // moved to extra fields
+            central_dir_entry_buf.write_all(&0_u16.to_le_bytes())?;
+            // crc
+            central_dir_entry_buf.write_all(&self.header.crc.to_le_bytes())?;
+            // Compressed size
+            central_dir_entry_buf.write_all(&self.compressed_size.to_le_bytes())?;
+            // Uncompressed size
+            central_dir_entry_buf.write_all(&self.header.uncompressed_size.to_le_bytes())?;
+            // Filename size
+            debug_assert!(self.header.filename.len() <= u16::MAX as usize);
+            central_dir_entry_buf.write_all(&(self.header.filename.len() as u16).to_le_bytes())?;
+            // extra field size
+            central_dir_entry_buf
+                .write_all(&self.header.extra_fields.data_length::<true>().to_le_bytes())?;
+            // comment size
+            central_dir_entry_buf.write_all(&0_u16.to_le_bytes())?;
+            // disk number start
+            central_dir_entry_buf.write_all(&0_u16.to_le_bytes())?;
+            // internal file attributes
+            central_dir_entry_buf.write_all(&0_u16.to_le_bytes())?;
+            // external file attributes
+            central_dir_entry_buf.write_all(&self.header.external_file_attributes.to_le_bytes())?;
+            // relative offset of local header
+            central_dir_entry_buf.write_all(&self.local_header_offset.to_le_bytes())?;
+        }
+
+        {
+            use tokio::io::AsyncWriteExt;
+            buf.write_all(&central_dir_entry_header).await?;
+
+            // Filename
+            buf.write_all(self.header.filename.as_bytes()).await?;
+            // Extra field
+        }
+        self.header.extra_fields.write_with_tokio::<_, true>(buf).await?;
 
         Ok(())
     }

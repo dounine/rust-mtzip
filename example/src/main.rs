@@ -63,9 +63,10 @@ async fn main() {
             // jobs.push(zipper.add_directory_with_tokio(file_name, None));
         }
     }
-    let mut file = File::create("/Users/lake/dounine/github/ipa/rust-mtzip/file/test.zip").unwrap();
+    let mut file = tokio::fs::File::create("/Users/lake/dounine/github/ipa/rust-mtzip/file/test.zip").await.unwrap();
     let jobs = Arc::new(tokio::sync::Mutex::new(jobs));
     let time = std::time::Instant::now();
-    zipper.write_with_tokio(&mut file, jobs).await.expect("tokio error");
+    let (tx, rx) = tokio::sync::mpsc::channel::<u64>(1);
+    zipper.write_with_tokio(&mut file, jobs, Some(tx)).await.expect("tokio error");
     println!("time: {:?}", time.elapsed());
 }

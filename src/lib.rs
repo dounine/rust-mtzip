@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
+use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::{
     borrow::Cow,
@@ -10,11 +12,11 @@ use std::{
     path::Path,
     sync::{mpsc, Mutex},
 };
-use std::path::PathBuf;
 
 use level::CompressionLevel;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
+use tokio::io::{AsyncSeek, AsyncWrite};
 use zip_archive_parts::{
     data::ZipData,
     extra_field::ExtraFields,
@@ -25,8 +27,8 @@ use zip_archive_parts::{
 pub mod level;
 mod zip_archive_parts;
 
-pub use zip_archive_parts::extra_field;
 use crate::zip_archive_parts::file::TokioReceiveZipFile;
+pub use zip_archive_parts::extra_field;
 
 // TODO: tests, maybe examples
 
@@ -336,14 +338,48 @@ impl ZipArchive {
     }
 
     #[inline]
-    pub async fn write_with_tokio<W: Write + Seek>(
+    pub async fn write_with_tokio<W: AsyncWrite + AsyncSeek + Unpin>(
         &mut self,
         writer: &mut W,
         jobs: Arc<tokio::sync::Mutex<Vec<ZipJob>>>,
+        process: Option<tokio::sync::mpsc::Sender<u64>>,
         // zip_listener: Arc<Mutex<P>>,
     ) -> std::io::Result<()> {
-        self.write_with_threads_with_tokio(writer, Self::get_threads(), jobs)
+        let threads = Self::get_threads();
+        let mut rx = {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<ZipFile>(2);
+            let size = {
+                let jobs = jobs.lock().await;
+                jobs.len()
+            };
+            let max_threads = threads.min(size);
+            for _ in 0..max_threads {
+                let tx = tx.clone();
+                let mut jobs_drain_ref = jobs.clone();
+                let process = process.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let next_job = jobs_drain_ref.lock().await.pop();
+                        if let Some(job) = next_job {
+                            let process_new = process.clone();
+                            let zip_file = job
+                                .into_file_with_tokio(process_new)
+                                .await
+                                .expect("No failing code path");
+                            tx.send(zip_file).await.unwrap();
+                        } else {
+                            break;
+                        }
+                    }
+                });
+            }
+            rx
+        };
+        self.data
+            .write_with_tokio(writer, &mut rx)
             .await
+            .expect("No failing code path");
+        Ok(())
     }
 
     /// Write compressed data to a writer (usually a file). Executes
@@ -379,12 +415,12 @@ impl ZipArchive {
     }
 
     #[inline]
-    pub async fn write_with_threads_with_tokio<W: Write + Seek>(
+    pub async fn write_with_threads_with_tokio<W: AsyncWrite + AsyncSeek + Unpin>(
         &mut self,
         writer: &mut W,
         threads: usize,
         jobs: Arc<tokio::sync::Mutex<Vec<ZipJob>>>,
-        // zip_listener: Arc<Mutex<P>>,
+        tx: Option<tokio::sync::mpsc::Sender<u64>>,
     ) -> std::io::Result<()> {
         let size = {
             let jobs = jobs.lock().await;
@@ -392,15 +428,19 @@ impl ZipArchive {
         };
         if size > 0 {
             self.compress_with_consumer_with_tokio(
-                jobs,
-                threads,
-                |zip_data, rx| {
-                    zip_data.write_with_tokio(writer, rx)
-                },
+                jobs, threads,
+                writer,
+                tx,
+                // |zip_data, rx| async move {
+                //     zip_data.write_with_tokio(writer, rx).await.expect("");
+                // },
                 // zip_listener,
-            ).await
+            )
+            .await;
+            Ok(())
         } else {
-            self.data.write_with_tokio(writer, std::iter::empty())
+            // self.data.write_with_tokio(writer, tokio::sync::mpsc::Receiver::).await
+            Ok(())
         }
     }
 
@@ -413,9 +453,9 @@ impl ZipArchive {
         consumer: F,
         zip_listener: Arc<Mutex<P>>,
     ) -> T
-        where
-            F: FnOnce(&mut ZipData, mpsc::Receiver<ZipFile>) -> T,
-            P: Fn(u64, u64) + Send,
+    where
+        F: FnOnce(&mut ZipData, mpsc::Receiver<ZipFile>) -> T,
+        P: Fn(u64, u64) + Send,
     {
         let jobs_drain = Mutex::new(self.jobs_queue.drain(..));
         // let listener = Arc::new(Mutex::new(zip_listener));
@@ -430,9 +470,7 @@ impl ZipArchive {
                         let next_job = jobs_drain_ref.lock().unwrap().next_back();
                         if let Some(job) = next_job {
                             let zip_file = job.into_file(listener_ref.clone()).unwrap();
-                            thread_tx
-                                .send(zip_file)
-                                .unwrap();
+                            thread_tx.send(zip_file).unwrap();
                         } else {
                             break;
                         }
@@ -444,45 +482,46 @@ impl ZipArchive {
         })
     }
 
-    async fn compress_with_consumer_with_tokio<F, T>(
+    async fn compress_with_consumer_with_tokio<W: AsyncWrite + AsyncSeek + Unpin>(
         &mut self,
         jobs: Arc<tokio::sync::Mutex<Vec<ZipJob>>>,
         threads: usize,
-        consumer: F,
-    ) -> T
-        where
-            F: FnOnce(&mut ZipData, mpsc::Receiver<ZipFile>) -> T,
-    {
-        let (tx, rx) = mpsc::channel::<ZipFile>();
-        let size = {
-            let jobs = jobs.lock().await;
-            jobs.len()
-        };
-        let max_threads = threads.min(size);
-        println!("max_threads: {}", max_threads);
-        let mut handlers = Vec::new();
-        println!("max_threads: {}", max_threads);
-        for _ in 0..max_threads {
-            let tx = tx.clone();
-            let mut jobs_drain_ref = jobs.clone();
-            let handler = tokio::spawn(async move {
-                loop {
-                    let next_job = jobs_drain_ref.lock().await.pop();
-                    if let Some(job) = next_job {
-                        let zip_file = job.into_file_with_tokio().await.expect("No failing code path");
-                        tx.send(zip_file).unwrap();
-                    } else {
-                        break;
+        writer: &mut W,
+        process: Option<tokio::sync::mpsc::Sender<u64>>,
+    ) {
+        let mut rx = {
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<ZipFile>(2);
+            let size = {
+                let jobs = jobs.lock().await;
+                jobs.len()
+            };
+            let max_threads = threads.min(size);
+            for _ in 0..max_threads {
+                let tx = tx.clone();
+                let mut jobs_drain_ref = jobs.clone();
+                let process = process.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let next_job = jobs_drain_ref.lock().await.pop();
+                        if let Some(job) = next_job {
+                            let process_new = process.clone();
+                            let zip_file = job
+                                .into_file_with_tokio(process_new)
+                                .await
+                                .expect("No failing code path");
+                            tx.send(zip_file).await.unwrap();
+                        } else {
+                            break;
+                        }
                     }
-                }
-            });
-            handlers.push(handler);
-        }
-        drop(tx);
-        // for handler in handlers { //TODO 在actix-web下，注释掉，程序不会运行上面的spawn
-        //     handler.await.expect("No failing code path");
-        // }
-        consumer(&mut self.data, rx)
+                });
+            }
+            rx
+        };
+        self.data
+            .write_with_tokio(writer, &mut rx)
+            .await
+            .expect("No failing code path");
     }
 
     fn get_threads() -> usize {

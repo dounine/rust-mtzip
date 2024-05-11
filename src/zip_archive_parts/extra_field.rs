@@ -3,6 +3,7 @@
 use std::{fs::Metadata, io::Write};
 
 use cfg_if::cfg_if;
+use tokio::io::AsyncWrite;
 
 /// This is a structure containing [`ExtraField`]s associated with a file or directory in a zip
 /// file, mostly used for filesystem properties, and this is the only functionality implemented
@@ -22,8 +23,8 @@ impl ExtraFields {
     ///
     /// All fields must have valid values depending on the field type.
     pub unsafe fn new<I>(fields: I) -> Self
-    where
-        I: IntoIterator<Item = ExtraField>,
+        where
+            I: IntoIterator<Item=ExtraField>,
     {
         Self {
             values: fields.into_iter().collect(),
@@ -126,6 +127,16 @@ impl ExtraFields {
     ) -> std::io::Result<()> {
         for field in &self.values {
             field.write::<_, CENTRAL_HEADER>(writer)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn write_with_tokio<W: AsyncWrite + Unpin, const CENTRAL_HEADER: bool>(
+        &self,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        for field in &self.values {
+            field.write_with_tokio::<_, CENTRAL_HEADER>(writer).await?;
         }
         Ok(())
     }
@@ -308,6 +319,91 @@ impl ExtraField {
                 }
 
                 writer.write_all(&field)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn write_with_tokio<W: AsyncWrite + Unpin, const CENTRAL_HEADER: bool>(
+        self,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        // Header ID
+        writer.write_all(&self.header_id().to_le_bytes()).await?;
+        // Field data size
+        writer.write_all(&self.field_size::<CENTRAL_HEADER>().to_le_bytes()).await?;
+
+        match self {
+            Self::Ntfs {
+                mtime,
+                atime,
+                ctime,
+            } => {
+                // Writing to a temporary in-memory array
+                let mut field = [0; Self::NTFS_FIELD_LEN];
+                {
+                    let mut field_buf: &mut [u8] = &mut field;
+
+                    // Reserved field
+                    field_buf.write_all(&0_u32.to_le_bytes())?;
+
+                    // Tag1 number
+                    field_buf.write_all(&1_u16.to_le_bytes())?;
+                    // Tag1 size
+                    field_buf.write_all(&24_u16.to_le_bytes())?;
+
+                    // Mtime
+                    field_buf.write_all(&mtime.to_le_bytes())?;
+                    // Atime
+                    field_buf.write_all(&atime.to_le_bytes())?;
+                    // Ctime
+                    field_buf.write_all(&ctime.to_le_bytes())?;
+                }
+
+                writer.write_all(&field).await?;
+            }
+            Self::UnixExtendedTimestamp {
+                mod_time,
+                ac_time,
+                cr_time,
+            } => {
+                let flags = Self::if_present(mod_time, MOD_TIME_PRESENT)
+                    | Self::if_present(ac_time, AC_TIME_PRESENT)
+                    | Self::if_present(cr_time, CR_TIME_PRESENT);
+                writer.write_all(&[flags]).await?;
+                if let Some(mod_time) = mod_time {
+                    writer.write_all(&mod_time.to_le_bytes()).await?;
+                }
+                if !CENTRAL_HEADER {
+                    if let Some(ac_time) = ac_time {
+                        writer.write_all(&ac_time.to_le_bytes()).await?;
+                    }
+                    if let Some(cr_time) = cr_time {
+                        writer.write_all(&cr_time.to_le_bytes()).await?;
+                    }
+                }
+            }
+            Self::UnixAttrs { uid, gid } => {
+                // Writing to a temporary in-memory array
+                let mut field = [0; Self::UNIX_ATTRS_LEN];
+                {
+                    let mut field_buf: &mut [u8] = &mut field;
+
+                    // Version of the field
+                    field_buf.write_all(&[1])?;
+                    // UID size
+                    field_buf.write_all(&[4])?;
+                    // UID
+                    field_buf.write_all(&uid.to_le_bytes())?;
+                    // GID size
+                    field_buf.write_all(&[4])?;
+                    // GID
+                    field_buf.write_all(&gid.to_le_bytes())?;
+                }
+
+                writer.write_all(&field).await?;
             }
         }
 
