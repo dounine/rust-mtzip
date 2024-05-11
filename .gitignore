@@ -2,3 +2,5 @@
 Cargo.lock
 **/*.iml
 **/*.xml
+file
+.idea

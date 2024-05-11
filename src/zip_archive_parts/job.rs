@@ -1,23 +1,13 @@
 use async_compression::Level;
-use async_zip::tokio::write::ZipFileWriter;
-use async_zip::{Compression, DeflateOption, ZipEntryBuilder};
-use std::fs::metadata;
-use std::io::Cursor;
-use std::os::unix::raw::time_t;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::{
-    borrow::Cow,
     fs::{File, Metadata},
     io::Read,
-    panic::{RefUnwindSafe, UnwindSafe},
-    path::Path,
 };
 
 use cfg_if::cfg_if;
 use flate2::{read::DeflateEncoder, Crc, CrcReader};
-// use futures_lite::AsyncWriteExt;
-use log::debug;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 use super::{extra_field::ExtraFields, file::ZipFile};

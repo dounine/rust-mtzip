@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::path::PathBuf;
-use rust_mtzip::level::CompressionLevel;
-use rust_mtzip::ZipArchive;
+use async_mtzip::level::CompressionLevel;
+use async_mtzip::ZipArchive;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use log::{debug, info, LevelFilter};

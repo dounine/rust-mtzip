@@ -1,5 +1,5 @@
 [package]
-name = "rust-mtzip"
+name = "async-mtzip"
 version = "0.0.1"
 edition = "2021"
 description = "A library for making zip archives with multithreaded compression"
@@ -24,10 +24,7 @@ rayon = { version = "1.10.0", optional = true }
 tokio = { version = "1.37.0", features = ["full"] }
 log = "0.4.21"
 env_logger = "0.11.3"
-async_zip = { version = "0.0.17", features = ["tokio", "tokio-fs", "deflate"] }
-#futures-util = "0.3.30"
 async-compression = { version = "0.4.10", features = ["tokio", "deflate"] }
-#futures-lite = "2.3.0"
 
 [features]
 default = ["rust_backend"]
