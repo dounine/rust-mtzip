@@ -344,7 +344,7 @@ impl ZipArchive {
     ) -> std::io::Result<()> {
         let threads = Self::get_threads();
         let mut rx = {
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<ZipFile>(2);
+            let (tx, rx) = tokio::sync::mpsc::channel::<ZipFile>(threads);
             let size = {
                 let jobs = jobs.lock().await;
                 jobs.len()
@@ -352,7 +352,7 @@ impl ZipArchive {
             let max_threads = threads.min(size);
             for _ in 0..max_threads {
                 let tx = tx.clone();
-                let mut jobs_drain_ref = jobs.clone();
+                let jobs_drain_ref = jobs.clone();
                 let process = process.clone();
                 tokio::spawn(async move {
                     loop {
