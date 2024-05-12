@@ -14,7 +14,7 @@ members = [".", "example"]
 
 [dependencies]
 cfg-if = "1.0.0"
-tokio = { version = "1.37.0"}
+tokio = { version = "1.37.0", features = ["full"] }
 async-compression = { version = "0.4.10", features = ["tokio", "deflate"] }
 crc32fast = "1.2.1"
 tempfile = "3.10.1"
