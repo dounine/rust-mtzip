@@ -4,7 +4,6 @@ use async_mtzip::ZipArchive;
 
 #[tokio::main]
 async fn main() {
-    //设置日志级别为info
     env_logger::init();
     let mut zipper = ZipArchive::new();
     let mut jobs = Vec::new();
