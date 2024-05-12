@@ -1,31 +1,6 @@
+use async_mtzip::job::ZipCommand;
 use async_mtzip::level::CompressionLevel;
 use async_mtzip::ZipArchive;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use tokio::fs::read_dir;
-
-pub async fn dirs(dir: PathBuf) -> Result<Vec<PathBuf>, String> {
-    let mut dirs = vec![dir];
-    let mut files = vec![];
-    while !dirs.is_empty() {
-        let mut dir_iter = read_dir(dirs.remove(0))
-            .await
-            .map_err(|e| format!("read_dir error: {}", e))?;
-        while let Some(entry) = dir_iter
-            .next_entry()
-            .await
-            .map_err(|e| format!("next_entry error: {}", e))?
-        {
-            let entry_path_buf = entry.path();
-            if entry_path_buf.is_dir() {
-                dirs.push(entry_path_buf);
-            } else {
-                files.push(entry_path_buf);
-            }
-        }
-    }
-    Ok(files)
-}
 
 #[tokio::main]
 async fn main() {
@@ -36,7 +11,9 @@ async fn main() {
 
     let zip_folder = std::path::Path::new("/Users/lake/dounine/github/ipa/rust-mtzip/file/aa");
 
-    let files = dirs(zip_folder.to_path_buf()).await.expect("dirs error");
+    let files = async_mtzip::dirs(zip_folder.to_path_buf())
+        .await
+        .expect("dirs error");
     println!("files len {:?}", files.len());
     let input_dir_str = zip_folder
         .as_os_str()
@@ -45,7 +22,6 @@ async fn main() {
     for file in files {
         let entry_str = file
             .as_path()
-            // .clone()
             .as_os_str()
             .to_str()
             .expect("Directory file path not valid UTF-8.");
@@ -54,14 +30,13 @@ async fn main() {
         if file.is_file() {
             jobs.push(zipper.add_file_from_fs(file, file_name, CompressionLevel::new(3), None));
         } else {
-            jobs.push(zipper.add_directory_with_tokio(file_name, None));
+            jobs.push(zipper.add_directory(file_name, None));
         }
     }
     let mut file =
         tokio::fs::File::create("/Users/lake/dounine/github/ipa/rust-mtzip/file/test.zip")
             .await
             .unwrap();
-    let jobs = Arc::new(tokio::sync::Mutex::new(jobs));
     let time = std::time::Instant::now();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<u64>(10);
     tokio::spawn(async move {
@@ -69,8 +44,23 @@ async fn main() {
             // println!("zip bytes {}", a);
         }
     });
+    let (jobs_tx, mut jobs_rx) = tokio::sync::mpsc::channel::<ZipCommand>(10);
+    tokio::spawn(async move {
+        while let Some(job) = jobs_rx.recv().await {
+            match job {
+                ZipCommand::Get { resp } => {
+                    let job = jobs.pop();
+                    if let Some(job) = job {
+                        resp.send(job).expect("send error");
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    });
     zipper
-        .write_with_tokio(&mut file, jobs, Some(tx))
+        .write(&mut file, jobs_tx, Some(tx))
         .await
         .expect("tokio error");
     println!("time: {:?}", time.elapsed());

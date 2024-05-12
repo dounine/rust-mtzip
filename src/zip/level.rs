@@ -3,7 +3,6 @@
 use core::fmt::Display;
 use std::error::Error;
 
-use flate2::Compression;
 
 /// Compression level that should be used when compressing a file or data.
 ///
@@ -91,27 +90,6 @@ impl Display for InvalidCompressionLevel {
 }
 
 impl Error for InvalidCompressionLevel {}
-
-impl From<CompressionLevel> for Compression {
-    #[inline]
-    fn from(value: CompressionLevel) -> Self {
-        Compression::new(value.0.into())
-    }
-}
-
-impl TryFrom<Compression> for CompressionLevel {
-    type Error = InvalidCompressionLevel;
-
-    fn try_from(value: Compression) -> Result<Self, Self::Error> {
-        let level = value.level();
-        Self::new(
-            level
-                .try_into()
-                .map_err(|_| InvalidCompressionLevel(level))?,
-        )
-        .ok_or(InvalidCompressionLevel(level))
-    }
-}
 
 impl From<CompressionLevel> for u8 {
     #[inline]

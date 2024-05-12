@@ -12,3 +12,6 @@ tokio = { version = "1.37.0", features = ["full"] }
 env_logger = "0.11.3"
 log = "0.4.21"
 tracing-subscriber = "0.3.18"
+flate2 = { version = "1.0", default-features = false }
+async-compression = { version = "0.4.10", features = ["tokio", "deflate"] }
+crc = "3.2.1"

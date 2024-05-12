@@ -2,6 +2,8 @@ pub mod data;
 pub mod extra_field;
 pub mod file;
 pub mod job;
+pub mod crc32;
+pub mod level;
 
 use std::io::Seek;
 use tokio::io::{AsyncSeek, AsyncSeekExt};

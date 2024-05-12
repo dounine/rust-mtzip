@@ -1,6 +1,8 @@
 use std::io::{Seek, Write};
+use std::path::PathBuf;
 
 use cfg_if::cfg_if;
+use tokio::fs::read_dir;
 use tokio::io::{AsyncSeek, AsyncWrite};
 
 use super::extra_field::ExtraFields;
@@ -20,8 +22,10 @@ const VERSION_MADE_BY: u16 = (3 << 8) + 62;
 const VERSION_MADE_BY: u16 = (11 << 8) + 62;
 
 #[cfg(any(target_os = "linux", unix))]
+#[allow(unused)]
 pub(crate) const DEFAULT_UNIX_FILE_ATTRS: u16 = 0o100644;
 #[cfg(any(target_os = "linux", unix))]
+#[allow(unused)]
 pub(crate) const DEFAULT_UNIX_DIR_ATTRS: u16 = 0o040755;
 
 #[cfg(target_os = "windows")]
@@ -59,19 +63,30 @@ pub struct ZipFileNoData {
     pub compressed_size: u32,
 }
 
-impl ZipFile {
-    pub(crate) const fn default_file_attrs() -> u16 {
-        cfg_if! {
-            if #[cfg(target_os = "windows")] {
-                DEFAULT_WINDOWS_FILE_ATTRS
-            } else if #[cfg(any(target_os = "linux", unix))] {
-                DEFAULT_UNIX_FILE_ATTRS
+pub async fn dirs(dir: PathBuf) -> Result<Vec<PathBuf>, String> {
+    let mut dirs = vec![dir];
+    let mut files = vec![];
+    while !dirs.is_empty() {
+        let mut dir_iter = read_dir(dirs.remove(0))
+            .await
+            .map_err(|e| format!("read_dir error: {}", e))?;
+        while let Some(entry) = dir_iter
+            .next_entry()
+            .await
+            .map_err(|e| format!("next_entry error: {}", e))?
+        {
+            let entry_path_buf = entry.path();
+            if entry_path_buf.is_dir() {
+                dirs.push(entry_path_buf);
             } else {
-                0
+                files.push(entry_path_buf);
             }
         }
     }
+    Ok(files)
+}
 
+impl ZipFile {
     pub(crate) const fn default_dir_attrs() -> u16 {
         cfg_if! {
             if #[cfg(target_os = "windows")] {
@@ -98,12 +113,15 @@ impl ZipFile {
         })
     }
 
-    pub async fn write_local_file_header_with_data_consuming_with_tokio<W: AsyncWrite + AsyncSeek + Unpin>(
+    pub async fn write_local_file_header_with_data_consuming_with_tokio<
+        W: AsyncWrite + AsyncSeek + Unpin,
+    >(
         self,
         buf: &mut W,
     ) -> std::io::Result<ZipFileNoData> {
         let local_header_offset = super::stream_position_u32_with_tokio(buf).await?;
-        self.write_local_file_header_and_data_with_tokio(buf).await?;
+        self.write_local_file_header_and_data_with_tokio(buf)
+            .await?;
         let Self { header, data } = self;
         Ok(ZipFileNoData {
             header,
@@ -165,8 +183,10 @@ impl ZipFile {
         Ok(())
     }
 
-
-    pub async fn write_local_file_header_and_data_with_tokio<W: AsyncWrite + Unpin>(&self, buf: &mut W) -> std::io::Result<()> {
+    pub async fn write_local_file_header_and_data_with_tokio<W: AsyncWrite + Unpin>(
+        &self,
+        buf: &mut W,
+    ) -> std::io::Result<()> {
         // Writing to a temporary in-memory statically sized array first
         let mut header = [0; Self::LOCAL_FILE_HEADER_LEN];
         {
@@ -212,7 +232,10 @@ impl ZipFile {
             buf.write_all(self.header.filename.as_bytes()).await?;
 
             // Extra field
-            self.header.extra_fields.write_with_tokio::<_, false>(buf).await?;
+            self.header
+                .extra_fields
+                .write_with_tokio::<_, false>(buf)
+                .await?;
 
             // Data
             buf.write_all(&self.data).await?;
@@ -220,7 +243,6 @@ impl ZipFile {
 
         Ok(())
     }
-
 
     #[inline]
     pub fn directory(
@@ -303,7 +325,10 @@ impl ZipFileNoData {
         Ok(())
     }
 
-    pub async fn write_central_directory_entry_with_tokio<W: AsyncWrite + Unpin>(&self, buf: &mut W) -> std::io::Result<()> {
+    pub async fn write_central_directory_entry_with_tokio<W: AsyncWrite + Unpin>(
+        &self,
+        buf: &mut W,
+    ) -> std::io::Result<()> {
         // Writing to a temporary in-memory statically sized array first
         let mut central_dir_entry_header = [0; Self::CENTRAL_DIR_ENTRY_LEN];
         {
@@ -356,7 +381,10 @@ impl ZipFileNoData {
             buf.write_all(self.header.filename.as_bytes()).await?;
             // Extra field
         }
-        self.header.extra_fields.write_with_tokio::<_, true>(buf).await?;
+        self.header
+            .extra_fields
+            .write_with_tokio::<_, true>(buf)
+            .await?;
 
         Ok(())
     }
