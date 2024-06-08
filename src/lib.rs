@@ -100,7 +100,6 @@ impl ZipArchive {
             archive_path: archived_path,
         }
     }
-
     #[inline]
     pub async fn write<W: AsyncWrite + AsyncSeek + Unpin>(
         &mut self,
