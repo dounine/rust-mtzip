@@ -54,15 +54,6 @@ impl ZipArchive {
         compression_level: Option<CompressionLevel>,
         compression_type: Option<CompressionType>,
     ) -> ZipJob {
-        // let job = ZipJob {
-        //     data_origin: ZipJobOrigin::Filesystem {
-        //         path: fs_path.clone(),
-        //         compression_level: compression_level.unwrap_or(CompressionLevel::best()),
-        //         compression_type: compression_type.unwrap_or(CompressionType::Deflate),
-        //     },
-        //     archive_path: archived_path.clone(),
-        // };
-        // self.push_job(job);
         ZipJob {
             data_origin: ZipJobOrigin::Filesystem {
                 path: fs_path,
